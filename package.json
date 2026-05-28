@@ -2,11 +2,11 @@
   "name": "mathlive-pro",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"pnpm --filter server dev\" \"pnpm --filter client dev\"",
-    "build": "pnpm --filter server build && pnpm --filter client build",
-    "lint": "pnpm --filter '*' lint",
-    "test": "pnpm --filter '*' test",
-    "typecheck": "pnpm --filter '*' typecheck"
+    "dev": "concurrently \"pnpm --filter './server' dev\" \"pnpm --filter './client' dev\"",
+    "build": "pnpm --filter './server' build && pnpm --filter './client' build",
+    "lint": "pnpm --filter './*' lint",
+    "test": "pnpm --filter './*' test",
+    "typecheck": "pnpm --filter './*' typecheck"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
