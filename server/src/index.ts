@@ -2,7 +2,7 @@ import express from 'express';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import cors from 'cors';
-import { createLogger } from './logger'; // we'll create this next
+import { createLogger } from './logger';
 
 const logger = createLogger('SERVER');
 const app = express();
@@ -10,6 +10,11 @@ const PORT = process.env.PORT || 4000;
 
 app.use(cors());
 app.use(express.json());
+
+// Root route – friendly message
+app.get('/', (_req, res) => {
+  res.send('MathLive Pro server is running.');
+});
 
 // Health check endpoint
 app.get('/api/health', (_req, res) => {

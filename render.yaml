@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: mathlive-server
+    runtime: node
+    plan: free
+    rootDir: .
+    buildCommand: pnpm install --no-frozen-lockfile && pnpm --filter server build
+    startCommand: pnpm --filter server start
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 20.11.0
