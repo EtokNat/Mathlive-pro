@@ -8,6 +8,7 @@ export type ConnectionState = 'CONNECTING' | 'OPEN' | 'RECONNECTING' | 'CLOSED';
 interface UseWebSocketOptions {
   url: string;
   onMessage: (data: any) => void;
+  onAudioData?: (data: ArrayBuffer) => void;
   reconnect?: boolean;
   maxRetries?: number;
 }
@@ -15,6 +16,7 @@ interface UseWebSocketOptions {
 export function useWebSocket({
   url,
   onMessage,
+  onAudioData,
   reconnect = true,
   maxRetries = Infinity,
 }: UseWebSocketOptions) {
@@ -24,6 +26,12 @@ export function useWebSocket({
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mounted = useRef(false);
   const reconnectAllowed = useRef(reconnect);
+  const onMessageRef = useRef(onMessage);
+  const onAudioDataRef = useRef(onAudioData);
+  const pendingMessages = useRef<any[]>([]);
+
+  onMessageRef.current = onMessage;
+  onAudioDataRef.current = onAudioData;
 
   const clearTimer = () => {
     if (timerRef.current) {
@@ -39,6 +47,7 @@ export function useWebSocket({
 
     setState('CONNECTING');
     const ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -46,16 +55,25 @@ export function useWebSocket({
       logger.info('WebSocket connected');
       setState('OPEN');
       retryCount.current = 0;
+      // Flush pending messages
+      while (pendingMessages.current.length > 0) {
+        const msg = pendingMessages.current.shift();
+        ws.send(JSON.stringify(msg));
+      }
     };
 
     ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        onAudioDataRef.current?.(event.data);
+        return;
+      }
       try {
-        const data = JSON.parse(event.data);
+        const data = JSON.parse(event.data as string);
         if (data.type === 'ping') {
           ws.send(JSON.stringify({ type: 'pong' }));
           return;
         }
-        onMessage(data);
+        onMessageRef.current(data);
       } catch (err: any) {
         logger.error('Failed to parse WebSocket message', { error: err.message, raw: event.data });
       }
@@ -80,7 +98,10 @@ export function useWebSocket({
     ws.onerror = (err) => {
       logger.error('WebSocket error', err);
     };
-  }, [url, onMessage, maxRetries]);
+  }, [url, maxRetries]);
+
+  const connectRef = useRef(connect);
+  connectRef.current = connect;
 
   const disconnect = useCallback(() => {
     reconnectAllowed.current = false;
@@ -90,50 +111,63 @@ export function useWebSocket({
 
   useEffect(() => {
     mounted.current = true;
-    connect();
+    connectRef.current();
+
     return () => {
       mounted.current = false;
       clearTimer();
       wsRef.current?.close();
     };
-  }, [connect]);
+  }, []);
 
   useEffect(() => {
     const handleOnline = () => {
       logger.info('Network back online');
       if (state !== 'OPEN' && state !== 'CONNECTING') {
-        connect();
+        connectRef.current();
       }
     };
-    const handleOffline = () => {
-      logger.warn('Network offline');
-    };
+    const handleOffline = () => logger.warn('Network offline');
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [state, connect]);
+  }, [state]);
 
   useEffect(() => {
     const handleVisibility = () => {
       if (document.visibilityState === 'visible' && wsRef.current?.readyState !== WebSocket.OPEN) {
         logger.info('Tab visible, reconnecting');
-        connect();
+        connectRef.current();
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [connect]);
+  }, []);
 
   const send = useCallback((data: any) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(data));
     } else {
-      logger.warn('Cannot send – socket not open', data);
+      // Queue message if socket is still connecting
+      if (wsRef.current?.readyState === WebSocket.CONNECTING) {
+        pendingMessages.current.push(data);
+        logger.debug('Message queued, socket connecting', data);
+      } else {
+        logger.warn('Cannot send – socket not open', data);
+      }
     }
   }, []);
 
-  return { state, send, retryCount: retryCount.current };
+  const sendBinary = useCallback((buffer: ArrayBuffer) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(buffer);
+    } else {
+      logger.warn('Cannot send binary – socket not open');
+    }
+  }, []);
+
+  return { state, send, sendBinary, retryCount: retryCount.current };
 }

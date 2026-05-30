@@ -1,18 +1,19 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { createLogger } from './logger';
 import { useWebSocket } from './hooks/useWebSocket';
+import { useAudioPublisher } from './hooks/useAudioPublisher';
+import { useAudioSubscriber } from './hooks/useAudioSubscriber';
 import ReconnectionBanner from './components/ReconnectionBanner';
 import Whiteboard from './components/Whiteboard';
 import './index.css';
 
 const logger = createLogger('App');
+const WS_URL = import.meta.env.VITE_WS_URL || 'wss://mathlive-pro.onrender.com';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
-
-const WS_URL = import.meta.env.VITE_WS_URL || 'wss://mathlive-pro.onrender.com';
 
 function App() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
@@ -20,44 +21,34 @@ function App() {
   const [storagePersisted, setStoragePersisted] = useState(false);
   const [roomCode, setRoomCode] = useState<string | null>(null);
   const [joined, setJoined] = useState(false);
+  const [isCreator, setIsCreator] = useState(false);
   const [strokes, setStrokes] = useState<any[]>([]);
+  const [audioActive, setAudioActive] = useState(false);
+
+  const { enqueueChunk } = useAudioSubscriber();
 
   useEffect(() => {
     const handler = (e: Event) => {
       e.preventDefault();
-      logger.info('beforeinstallprompt captured');
       setInstallPrompt(e as BeforeInstallPromptEvent);
     };
     window.addEventListener('beforeinstallprompt', handler);
-    if (window.matchMedia('(display-mode: standalone)').matches) {
-      setIsInstalled(true);
-    }
-    const requestStorage = async () => {
-      if (navigator.storage && navigator.storage.persist) {
-        try {
-          const isPersisted = await navigator.storage.persist();
-          logger.info(`Persistent storage ${isPersisted ? 'granted' : 'denied'}`);
-          setStoragePersisted(isPersisted);
-        } catch (err) {
-          logger.error('Failed to request persistent storage', err);
-        }
+    if (window.matchMedia('(display-mode: standalone)').matches) setIsInstalled(true);
+    (async () => {
+      if (navigator.storage?.persist) {
+        const persisted = await navigator.storage.persist();
+        setStoragePersisted(persisted);
       }
-    };
-    requestStorage();
+    })();
     return () => window.removeEventListener('beforeinstallprompt', handler);
   }, []);
 
   const handleInstall = async () => {
     if (!installPrompt) return;
-    try {
-      await installPrompt.prompt();
-      const choice = await installPrompt.userChoice;
-      logger.info(`Install prompt outcome: ${choice.outcome}`);
-      setInstallPrompt(null);
-      if (choice.outcome === 'accepted') setIsInstalled(true);
-    } catch (err) {
-      logger.error('Install prompt failed', err);
-    }
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === 'accepted') setIsInstalled(true);
+    setInstallPrompt(null);
   };
 
   const onMessage = useCallback((data: any) => {
@@ -65,75 +56,73 @@ function App() {
       case 'room-created':
         setRoomCode(data.roomCode);
         setJoined(true);
+        setIsCreator(true);
         break;
       case 'room-joined':
         setJoined(true);
         break;
       case 'stroke':
-        setStrokes((prev) => [...prev, data]);
+        setStrokes(prev => [...prev, data]);
+        break;
+      case 'participant-joined':
+        logger.info('Participant joined', data.connectionId);
         break;
       case 'error':
         logger.error('Server error', data.error);
         break;
-      default:
-        break;
     }
   }, []);
 
-  const { state: wsState, send } = useWebSocket({
+  const onAudioData = useCallback((buffer: ArrayBuffer) => {
+    enqueueChunk(buffer);
+  }, [enqueueChunk]);
+
+  const { state: wsState, send, sendBinary } = useWebSocket({
     url: WS_URL,
     onMessage,
+    onAudioData,
   });
 
-  const createRoom = () => {
-    send({ type: 'create-room' });
-  };
+  useAudioPublisher({ sendBinary, active: isCreator && audioActive });
 
+  const createRoom = () => send({ type: 'create-room' });
   const joinRoom = () => {
     const code = prompt('Enter room code:');
-    if (code) {
-      send({ type: 'join-room', roomCode: code });
-    }
+    if (code) send({ type: 'join-room', roomCode: code });
   };
 
-  const onStroke = (stroke: any) => {
-    send({ type: 'stroke', ...stroke });
-  };
+  const onStroke = (stroke: any) => send({ type: 'stroke', ...stroke });
 
   return (
     <div className="app-container">
       <ReconnectionBanner state={wsState} />
       <h1>MathLive Pro</h1>
-      <p>Welcome to the future of collaborative math learning.</p>
 
-      {!joined && (
-        <div>
+      {!joined ? (
+        <>
+          <p>Welcome to the future of collaborative math learning.</p>
           <button onClick={createRoom}>Create Room</button>
           <button onClick={joinRoom}>Join Room</button>
-        </div>
-      )}
-      {joined && roomCode && <p>Room: {roomCode}</p>}
-
-      {joined && (
-        <Whiteboard onStroke={onStroke} incomingStrokes={strokes} />
-      )}
-
-      {!joined && (
-        <>
           {!isInstalled && installPrompt && (
             <div className="install-banner">
-              <p>Install this app on your device for the best experience.</p>
+              <p>Install this app for the best experience.</p>
               <button onClick={handleInstall}>Install</button>
             </div>
           )}
-          {isInstalled && <p>✅ App installed</p>}
           <div className="storage-status">
-            {storagePersisted ? (
-              <p>✅ Persistent storage granted – offline mode fully supported.</p>
-            ) : (
-              <p>⚠️ Persistent storage not granted. Some offline features may be limited.</p>
-            )}
+            {storagePersisted ? '✅ Persistent storage granted.' : '⚠️ Storage not persisted.'}
           </div>
+        </>
+      ) : (
+        <>
+          {roomCode && <p style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>Room Code: {roomCode}</p>}
+          {isCreator && !audioActive && (
+            <div className="splash">
+              <button onClick={() => setAudioActive(true)}>🎙️ Start Audio Class</button>
+            </div>
+          )}
+          {isCreator && audioActive && <p style={{ color: '#ef4444', fontWeight: 'bold' }}>🔴 Broadcasting audio</p>}
+          <Whiteboard onStroke={onStroke} incomingStrokes={strokes} />
         </>
       )}
     </div>
