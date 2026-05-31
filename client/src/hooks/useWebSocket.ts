@@ -8,7 +8,7 @@ export type ConnectionState = 'CONNECTING' | 'OPEN' | 'RECONNECTING' | 'CLOSED';
 interface UseWebSocketOptions {
   url: string;
   onMessage: (data: any) => void;
-  onAudioData?: (data: ArrayBuffer) => void;
+  enqueueChunk?: (chunk: ArrayBuffer) => void;
   reconnect?: boolean;
   maxRetries?: number;
 }
@@ -16,7 +16,7 @@ interface UseWebSocketOptions {
 export function useWebSocket({
   url,
   onMessage,
-  onAudioData,
+  enqueueChunk,
   reconnect = true,
   maxRetries = Infinity,
 }: UseWebSocketOptions) {
@@ -27,11 +27,11 @@ export function useWebSocket({
   const mounted = useRef(false);
   const reconnectAllowed = useRef(reconnect);
   const onMessageRef = useRef(onMessage);
-  const onAudioDataRef = useRef(onAudioData);
+  const enqueueChunkRef = useRef(enqueueChunk);
   const pendingMessages = useRef<any[]>([]);
 
   onMessageRef.current = onMessage;
-  onAudioDataRef.current = onAudioData;
+  enqueueChunkRef.current = enqueueChunk;
 
   const clearTimer = () => {
     if (timerRef.current) {
@@ -47,7 +47,7 @@ export function useWebSocket({
 
     setState('CONNECTING');
     const ws = new WebSocket(url);
-    ws.binaryType = 'arraybuffer'; // Ask the browser for ArrayBuffers
+    ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -61,26 +61,25 @@ export function useWebSocket({
       }
     };
 
-    ws.onmessage = async (event) => {
-      // AGGRESSIVE LOGGING: Check exact payload characteristics
-      console.log(`[WS onmessage] Payload arrived. typeof: ${typeof event.data}, constructor: ${event.data?.constructor?.name}`);
+    ws.onmessage = (event) => {
+      console.log(`[WS onmessage] typeof: ${typeof event.data}, constructor: ${event.data?.constructor?.name}`);
 
-      // SAFETY NET: If the browser handed us a Blob instead of an ArrayBuffer
-      if (event.data instanceof Blob) {
-        console.log(`[WS onmessage] ⚠️ Blob detected! Converting to ArrayBuffer...`);
-        const buffer = await event.data.arrayBuffer();
-        onAudioDataRef.current?.(buffer);
-        return;
-      }
-
-      // STANDARD ROUTE: We got the ArrayBuffer as requested
       if (event.data instanceof ArrayBuffer) {
-        console.log(`[WS onmessage] ✅ ArrayBuffer detected! Size: ${event.data.byteLength} bytes.`);
-        onAudioDataRef.current?.(event.data);
+        console.log(`📥 [3/5] WS received binary (ArrayBuffer), size: ${event.data.byteLength} bytes`);
+        if (enqueueChunkRef.current) {
+          console.log('🎯 [Bridge] enqueueChunk is defined, calling it now');
+          enqueueChunkRef.current(event.data);
+        } else {
+          console.warn('⚠️ [Bridge] enqueueChunk is UNDEFINED – audio will not play');
+        }
         return;
       }
-      
-      // JSON ROUTE
+
+      if (event.data instanceof Blob) {
+        event.data.arrayBuffer().then(buf => enqueueChunkRef.current?.(buf));
+        return;
+      }
+
       try {
         const data = JSON.parse(event.data as string);
         if (data.type === 'ping') {
@@ -174,9 +173,10 @@ export function useWebSocket({
 
   const sendBinary = useCallback((buffer: ArrayBuffer) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
+      console.log(`📤 [2/5] WS sendBinary: ${buffer.byteLength} bytes`);
       wsRef.current.send(buffer);
     } else {
-      logger.warn('Cannot send binary – socket not open');
+      console.warn('⚠️ [WS] Cannot send binary – socket not open');
     }
   }, []);
 

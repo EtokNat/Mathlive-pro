@@ -25,8 +25,8 @@ function App() {
   const [strokes, setStrokes] = useState<any[]>([]);
   const [audioActive, setAudioActive] = useState(false);
 
-  // FIX: Extract initAudio and remove the invalid 'joined' argument
   const { enqueueChunk, initAudio } = useAudioSubscriber();
+  const { isPublishing, startPublishing, stopPublishing } = useAudioPublisher();
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -43,6 +43,14 @@ function App() {
     })();
     return () => window.removeEventListener('beforeinstallprompt', handler);
   }, []);
+
+  const handleInstall = async () => {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === 'accepted') setIsInstalled(true);
+    setInstallPrompt(null);
+  };
 
   const onMessage = useCallback((data: any) => {
     switch (data.type) {
@@ -66,33 +74,34 @@ function App() {
     }
   }, []);
 
-  const onAudioData = useCallback((buffer: ArrayBuffer) => {
-    // AGGRESSIVE LOGGING: Confirm the bridge is crossed
-    console.log(`🌉 [App Bridge] onAudioData fired! Buffer size: ${buffer.byteLength} bytes`);
-    enqueueChunk(buffer);
-  }, [enqueueChunk]);
-
   const { state: wsState, send, sendBinary } = useWebSocket({
     url: WS_URL,
     onMessage,
-    onAudioData,
+    enqueueChunk,
   });
 
-  useAudioPublisher({ sendBinary, active: isCreator && audioActive });
-
   const createRoom = async () => {
-    console.log('🟢 [App] createRoom clicked - Firing initAudio()');
-    await initAudio(); // FIX: Initialize audio engine on user click
+    await initAudio();
     send({ type: 'create-room' });
   };
 
   const joinRoom = async () => {
     const code = prompt('Enter room code:');
     if (code) {
-      console.log(`🟢 [App] joinRoom clicked for code ${code} - Firing initAudio()`);
-      await initAudio(); // FIX: Initialize audio engine on user click
+      await initAudio();
       send({ type: 'join-room', roomCode: code });
     }
+  };
+
+  const handleStartAudio = async () => {
+    if (isPublishing) return;
+    setAudioActive(true);
+    await startPublishing(sendBinary);
+  };
+
+  const handleStopAudio = () => {
+    stopPublishing();
+    setAudioActive(false);
   };
 
   const onStroke = (stroke: any) => send({ type: 'stroke', ...stroke });
@@ -120,12 +129,17 @@ function App() {
       ) : (
         <>
           {roomCode && <p style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>Room Code: {roomCode}</p>}
-          {isCreator && !audioActive && (
+          {isCreator && !isPublishing && (
             <div className="splash">
-              <button onClick={() => setAudioActive(true)}>🎙️ Start Audio Class</button>
+              <button onClick={handleStartAudio}>🎙️ Start Audio Class</button>
             </div>
           )}
-          {isCreator && audioActive && <p style={{ color: '#ef4444', fontWeight: 'bold' }}>🔴 Broadcasting audio</p>}
+          {isCreator && isPublishing && (
+            <div>
+              <p style={{ color: '#ef4444', fontWeight: 'bold' }}>🔴 Broadcasting audio</p>
+              <button onClick={handleStopAudio}>⏹️ Stop Audio</button>
+            </div>
+          )}
           <Whiteboard onStroke={onStroke} incomingStrokes={strokes} />
         </>
       )}

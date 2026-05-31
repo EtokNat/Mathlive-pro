@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "ogg-opus-decoder": "^1.7.3",
     "opus-decoder": "^0.7.11",
     "opus-recorder": "^8.0.5",
     "opus-stream-decoder": "^1.2.7",

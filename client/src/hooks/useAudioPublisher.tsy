@@ -21,25 +21,18 @@ export function useAudioPublisher(): UseAudioPublisherReturn {
       const recorder = new Recorder({
         encoderPath: '/opus-recorder/encoderWorker.min.js',
         streamPages: true,
-        maxFramesPerPage: 1,
+        maxFramesPerPage: 1,       // emit each frame immediately
         numberOfChannels: 1,
         sampleRate: 16000,
         frameSize: 20,
-        application: 2049,
-        bufferLength: 128,
+        application: 2049,         // OPUS_APPLICATION_AUDIO
+        bufferLength: 256,         // <<< KEY: small buffer for low latency (16ms)
       });
 
       recorder.ondataavailable = (arrayBuffer: ArrayBuffer) => {
         if (arrayBuffer.byteLength > 0) {
-          // Create a new buffer with 8 bytes for the timestamp (BigUint64) + audio data
-          const ts = BigInt(Math.round(performance.now() * 1000)); // microseconds
-          const header = new Uint8Array(8);
-          new DataView(header.buffer).setBigUint64(0, ts, true);
-          const combined = new Uint8Array(header.byteLength + arrayBuffer.byteLength);
-          combined.set(header);
-          combined.set(new Uint8Array(arrayBuffer), header.byteLength);
-          console.log(`🎤 [1/5] Ogg page (${arrayBuffer.byteLength} bytes) + timestamp`);
-          sendBinary(combined.buffer.slice(combined.byteOffset, combined.byteOffset + combined.byteLength));
+          console.log(`🎤 [1/5] Ogg page: ${arrayBuffer.byteLength} bytes`);
+          sendBinary(arrayBuffer);
         }
       };
 
@@ -58,7 +51,7 @@ export function useAudioPublisher(): UseAudioPublisherReturn {
       };
 
       recorderRef.current = recorder;
-      await recorder.start();
+      await recorder.start();   // No arguments – library manages stream
     } catch (err) {
       console.error('❌ [AudioPub] Start failed:', err);
     }
