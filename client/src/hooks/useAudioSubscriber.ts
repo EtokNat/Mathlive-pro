@@ -1,65 +1,103 @@
 import { useRef, useCallback, useEffect } from 'react';
-import { OpusDecoder } from 'opus-decoder';
-import { createLogger } from '../logger';
-
-const logger = createLogger('AudioSub');
 
 export function useAudioSubscriber() {
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const decoderRef = useRef<OpusDecoder | null>(null);
-  const nextPlayAt = useRef<number>(0);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const mediaSourceRef = useRef<MediaSource | null>(null);
+  const sourceBufferRef = useRef<SourceBuffer | null>(null);
+  const chunkQueue = useRef<ArrayBuffer[]>([]);
+  const hasReceivedHeader = useRef(false);
 
-  // Enqueue a raw audio chunk for decoding and scheduled playback
-  const enqueueChunk = useCallback(async (chunk: ArrayBuffer) => {
+  const initAudio = useCallback(async () => {
+    if (audioElRef.current) return;
+
+    console.log('🚀 [AudioSub] Initializing Native MediaSource...');
+    const mediaSource = new MediaSource();
+    
+    // Create the audio element and force it onto the screen
+    const audioEl = document.createElement('audio');
+    audioEl.src = URL.createObjectURL(mediaSource);
+    audioEl.autoplay = true;
+    audioEl.controls = true; // We need to see the play button and timeline!
+    
+    // Style it so it floats in the bottom right corner
+    audioEl.style.position = 'fixed';
+    audioEl.style.bottom = '20px';
+    audioEl.style.right = '20px';
+    audioEl.style.zIndex = '9999';
+    audioEl.style.boxShadow = '0px 4px 10px rgba(0,0,0,0.5)';
+    document.body.appendChild(audioEl);
+    
+    audioElRef.current = audioEl;
+    mediaSourceRef.current = mediaSource;
+
+    // --- DIAGNOSTIC EVENT LISTENERS ---
+    audioEl.addEventListener('playing', () => console.log('▶️ [AudioSub] BROWSER CONFIRMS AUDIO IS PLAYING!'));
+    audioEl.addEventListener('waiting', () => console.warn('⏳ [AudioSub] Browser is WAITING for larger chunks...'));
+    audioEl.addEventListener('stalled', () => console.warn('🛑 [AudioSub] Audio stalled! Buffer starved.'));
+    audioEl.addEventListener('error', () => console.error('❌ [AudioSub] Audio element error:', audioEl.error));
+
+    mediaSource.addEventListener('sourceopen', () => {
+      console.log('✅ [AudioSub] MediaSource open. Creating SourceBuffer...');
+      try {
+        const sourceBuffer = mediaSource.addSourceBuffer('audio/webm; codecs="opus"');
+        sourceBufferRef.current = sourceBuffer;
+
+        sourceBuffer.addEventListener('updateend', () => {
+          if (chunkQueue.current.length > 0 && !sourceBuffer.updating) {
+            try {
+              sourceBuffer.appendBuffer(chunkQueue.current.shift()!);
+            } catch (err) {
+              console.error('❌ [AudioSub] Buffer append error:', err);
+            }
+          }
+        });
+      } catch (e) {
+        console.error('❌ [AudioSub] Your browser does not support audio/webm codecs=opus', e);
+      }
+    });
+
     try {
-      if (!audioCtxRef.current) {
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        audioCtxRef.current = new AudioContextClass();
-        decoderRef.current = new OpusDecoder({ sampleRate: 16000, channels: 1 });
-        await decoderRef.current.ready;
-        nextPlayAt.current = audioCtxRef.current.currentTime;
-      }
-
-      const ctx = audioCtxRef.current;
-      const decoder = decoderRef.current;
-
-      // Auto-resume if browser suspended audio context
-      if (ctx.state === 'suspended') {
-        await ctx.resume();
-      }
-
-      const { channelData, samplesDecoded } = await decoder.decode(new Uint8Array(chunk));
-      if (samplesDecoded === 0) return;
-
-      const buffer = ctx.createBuffer(1, samplesDecoded, 16000);
-      buffer.getChannelData(0).set(channelData[0]);
-
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(ctx.destination);
-
-      const now = ctx.currentTime;
-      if (nextPlayAt.current < now) {
-        nextPlayAt.current = now;
-      }
-      source.start(nextPlayAt.current);
-      nextPlayAt.current += buffer.duration;
+      await audioEl.play();
+      console.log('🔊 [AudioSub] Auto-play triggered successfully.');
     } catch (err) {
-      logger.error('Error rendering audio frame', err);
+      console.error('❌ [AudioSub] Auto-play blocked. You must click play manually.', err);
     }
   }, []);
 
-  // Cleanup on unmount
+  const enqueueChunk = useCallback((chunk: ArrayBuffer) => {
+    if (!hasReceivedHeader.current) {
+      hasReceivedHeader.current = true;
+    }
+
+    const sourceBuffer = sourceBufferRef.current;
+    if (!sourceBuffer || sourceBuffer.updating) {
+      chunkQueue.current.push(chunk);
+    } else {
+      try {
+        if (chunkQueue.current.length > 0) {
+           chunkQueue.current.push(chunk);
+           sourceBuffer.appendBuffer(chunkQueue.current.shift()!);
+        } else {
+           sourceBuffer.appendBuffer(chunk);
+        }
+      } catch (err) {
+        console.error('❌ [AudioSub] Failed to append buffer.', err);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     return () => {
-      if (decoderRef.current) {
-        decoderRef.current.free();
-      }
-      if (audioCtxRef.current) {
-        audioCtxRef.current.close();
+      if (audioElRef.current) {
+        audioElRef.current.pause();
+        audioElRef.current.removeAttribute('src');
+        audioElRef.current.load();
+        if (document.body.contains(audioElRef.current)) {
+          document.body.removeChild(audioElRef.current);
+        }
       }
     };
   }, []);
 
-  return { enqueueChunk };
+  return { enqueueChunk, initAudio };
 }

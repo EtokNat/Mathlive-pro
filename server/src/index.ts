@@ -65,16 +65,26 @@ wss.on('connection', (ws: WebSocket) => {
   ws.on('message', (rawData: any, isBinary: boolean) => {
     // Binary path – audio relay
     if (isBinary) {
+      const byteSize = rawData.length || rawData.byteLength;
+      logger.info(`☁️ [2/5] Server received binary data: ${byteSize} bytes from ${connectionId}`);
+      
       const room = findRoomByConnection(connectionId);
-      if (!room) return; // must be in a room to relay audio
+      if (!room) {
+        logger.warn(`⚠️ [SERVER] Dropped binary data: ${connectionId} is not in a room`);
+        return; 
+      }
+      
+      let sentCount = 0;
       room.participants.forEach((id) => {
         if (id !== connectionId) {
           const otherWs = findWsByConnectionId(id);
           if (otherWs && otherWs.readyState === WebSocket.OPEN) {
             otherWs.send(rawData, { binary: true });
+            sentCount++;
           }
         }
       });
+      logger.info(`☁️ [3/5] Server relayed ${byteSize} bytes to ${sentCount} listeners`);
       return;
     }
 

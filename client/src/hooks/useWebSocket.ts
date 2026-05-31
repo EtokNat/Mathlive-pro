@@ -47,7 +47,7 @@ export function useWebSocket({
 
     setState('CONNECTING');
     const ws = new WebSocket(url);
-    ws.binaryType = 'arraybuffer';
+    ws.binaryType = 'arraybuffer'; // Ask the browser for ArrayBuffers
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -55,18 +55,32 @@ export function useWebSocket({
       logger.info('WebSocket connected');
       setState('OPEN');
       retryCount.current = 0;
-      // Flush pending messages
       while (pendingMessages.current.length > 0) {
         const msg = pendingMessages.current.shift();
         ws.send(JSON.stringify(msg));
       }
     };
 
-    ws.onmessage = (event) => {
+    ws.onmessage = async (event) => {
+      // AGGRESSIVE LOGGING: Check exact payload characteristics
+      console.log(`[WS onmessage] Payload arrived. typeof: ${typeof event.data}, constructor: ${event.data?.constructor?.name}`);
+
+      // SAFETY NET: If the browser handed us a Blob instead of an ArrayBuffer
+      if (event.data instanceof Blob) {
+        console.log(`[WS onmessage] ⚠️ Blob detected! Converting to ArrayBuffer...`);
+        const buffer = await event.data.arrayBuffer();
+        onAudioDataRef.current?.(buffer);
+        return;
+      }
+
+      // STANDARD ROUTE: We got the ArrayBuffer as requested
       if (event.data instanceof ArrayBuffer) {
+        console.log(`[WS onmessage] ✅ ArrayBuffer detected! Size: ${event.data.byteLength} bytes.`);
         onAudioDataRef.current?.(event.data);
         return;
       }
+      
+      // JSON ROUTE
       try {
         const data = JSON.parse(event.data as string);
         if (data.type === 'ping') {
@@ -150,14 +164,11 @@ export function useWebSocket({
   const send = useCallback((data: any) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(data));
+    } else if (wsRef.current?.readyState === WebSocket.CONNECTING) {
+      pendingMessages.current.push(data);
+      logger.debug('Message queued, socket connecting', data);
     } else {
-      // Queue message if socket is still connecting
-      if (wsRef.current?.readyState === WebSocket.CONNECTING) {
-        pendingMessages.current.push(data);
-        logger.debug('Message queued, socket connecting', data);
-      } else {
-        logger.warn('Cannot send – socket not open', data);
-      }
+      logger.warn('Cannot send – socket not open', data);
     }
   }, []);
 

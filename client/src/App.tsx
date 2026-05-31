@@ -25,7 +25,8 @@ function App() {
   const [strokes, setStrokes] = useState<any[]>([]);
   const [audioActive, setAudioActive] = useState(false);
 
-  const { enqueueChunk } = useAudioSubscriber();
+  // FIX: Extract initAudio and remove the invalid 'joined' argument
+  const { enqueueChunk, initAudio } = useAudioSubscriber();
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -42,14 +43,6 @@ function App() {
     })();
     return () => window.removeEventListener('beforeinstallprompt', handler);
   }, []);
-
-  const handleInstall = async () => {
-    if (!installPrompt) return;
-    await installPrompt.prompt();
-    const choice = await installPrompt.userChoice;
-    if (choice.outcome === 'accepted') setIsInstalled(true);
-    setInstallPrompt(null);
-  };
 
   const onMessage = useCallback((data: any) => {
     switch (data.type) {
@@ -74,6 +67,8 @@ function App() {
   }, []);
 
   const onAudioData = useCallback((buffer: ArrayBuffer) => {
+    // AGGRESSIVE LOGGING: Confirm the bridge is crossed
+    console.log(`🌉 [App Bridge] onAudioData fired! Buffer size: ${buffer.byteLength} bytes`);
     enqueueChunk(buffer);
   }, [enqueueChunk]);
 
@@ -85,10 +80,19 @@ function App() {
 
   useAudioPublisher({ sendBinary, active: isCreator && audioActive });
 
-  const createRoom = () => send({ type: 'create-room' });
-  const joinRoom = () => {
+  const createRoom = async () => {
+    console.log('🟢 [App] createRoom clicked - Firing initAudio()');
+    await initAudio(); // FIX: Initialize audio engine on user click
+    send({ type: 'create-room' });
+  };
+
+  const joinRoom = async () => {
     const code = prompt('Enter room code:');
-    if (code) send({ type: 'join-room', roomCode: code });
+    if (code) {
+      console.log(`🟢 [App] joinRoom clicked for code ${code} - Firing initAudio()`);
+      await initAudio(); // FIX: Initialize audio engine on user click
+      send({ type: 'join-room', roomCode: code });
+    }
   };
 
   const onStroke = (stroke: any) => send({ type: 'stroke', ...stroke });
